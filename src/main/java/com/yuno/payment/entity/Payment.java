@@ -33,6 +33,10 @@ public class Payment {
 	private PaymentStatus status;
 
 	private String provider;
+	
+	private String providerTransactionId;
+
+    private String failureReason;
 
 	private LocalDateTime createdAt;
 
