@@ -1,5 +1,9 @@
 package com.yuno.payment.orchestration;
 
+import java.time.LocalDateTime;
+
+import org.springframework.stereotype.Service;
+
 import com.yuno.payment.connector.PaymentProviderConnector;
 import com.yuno.payment.dto.CreatePaymentRequest;
 import com.yuno.payment.dto.PaymentResponse;
@@ -8,67 +12,117 @@ import com.yuno.payment.entity.Payment;
 import com.yuno.payment.entity.PaymentStatus;
 import com.yuno.payment.repository.PaymentRepository;
 import com.yuno.payment.routing.PaymentRoutingEngine;
+
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Service;
-
-import java.time.LocalDateTime;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class PaymentOrchestrationService {
 
-    private final PaymentRoutingEngine routingEngine;
+	private static final int MAX_RETRIES = 2;
 
-    private final PaymentRepository paymentRepository;
+	private final PaymentRoutingEngine routingEngine;
 
-    public PaymentResponse processPayment(CreatePaymentRequest request) {
+	private final PaymentRepository paymentRepository;
 
-        log.info("Starting payment orchestration");
+	public PaymentResponse processPayment(CreatePaymentRequest request) {
 
-        PaymentProviderConnector connector =
-                routingEngine.route(request.getPaymentMethod());
+		long startTime = System.currentTimeMillis();
 
-        log.info("Selected provider: {}", connector.getProviderName());
+		StringBuilder attemptHistory = new StringBuilder();
 
-        ProviderResponse providerResponse =
-                connector.processPayment(request);
+		int retryCount = 0;
 
-        Payment payment = Payment.builder()
-                .amount(request.getAmount())
-                .currency(request.getCurrency())
-                .paymentMethod(request.getPaymentMethod())
-                .provider(connector.getProviderName())
-                .providerTransactionId(
-                        providerResponse.getTransactionId()
-                )
-                .failureReason(
-                        providerResponse.isSuccess()
-                                ? null
-                                : providerResponse.getMessage()
-                )
-                .status(
-                        providerResponse.isSuccess()
-                                ? PaymentStatus.SUCCESS
-                                : PaymentStatus.FAILED
-                )
-                .createdAt(LocalDateTime.now())
-                .updatedAt(LocalDateTime.now())
-                .build();
+		boolean paymentSuccess = false;
 
-        Payment savedPayment = paymentRepository.save(payment);
+		boolean failoverOccurred = false;
 
-        log.info("Payment processed with status: {}",
-                savedPayment.getStatus());
+		ProviderResponse providerResponse = null;
 
-        return PaymentResponse.builder()
-                .paymentId(savedPayment.getId())
-                .amount(savedPayment.getAmount())
-                .currency(savedPayment.getCurrency())
-                .paymentMethod(savedPayment.getPaymentMethod())
-                .status(savedPayment.getStatus().name())
-                .provider(savedPayment.getProvider())
-                .build();
-    }
+		PaymentProviderConnector finalProvider = null;
+
+		log.info("Starting payment orchestration");
+
+		PaymentProviderConnector primaryProvider = routingEngine.getPrimaryProvider(request.getPaymentMethod());
+
+		finalProvider = primaryProvider;
+
+		while (retryCount <= MAX_RETRIES) {
+
+			providerResponse = primaryProvider.processPayment(request);
+
+			if (providerResponse.isSuccess()) {
+
+				paymentSuccess = true;
+
+				attemptHistory.append("SUCCESS -> ").append(primaryProvider.getProviderName()).append(" on attempt ")
+						.append(retryCount + 1);
+
+				break;
+			}
+
+			retryCount++;
+
+			attemptHistory.append("FAILED -> ").append(primaryProvider.getProviderName()).append(" on attempt ")
+					.append(retryCount).append(" | Reason: ").append(providerResponse.getMessage()).append(" || ");
+
+			log.warn("Retry {} failed for provider {}", retryCount, primaryProvider.getProviderName());
+		}
+
+		// FAILOVER FLOW
+		if (!paymentSuccess) {
+
+			failoverOccurred = true;
+
+			PaymentProviderConnector failoverProvider = routingEngine.getFailoverProvider(request.getPaymentMethod());
+
+			finalProvider = failoverProvider;
+
+			log.warn("Initiating failover to {}", failoverProvider.getProviderName());
+
+			providerResponse = failoverProvider.processPayment(request);
+
+			if (providerResponse.isSuccess()) {
+
+				paymentSuccess = true;
+
+				attemptHistory.append("FAILOVER SUCCESS -> ").append(failoverProvider.getProviderName());
+
+			} else {
+
+				attemptHistory.append("FAILOVER FAILED -> ").append(failoverProvider.getProviderName())
+						.append(" | Reason: ").append(providerResponse.getMessage());
+			}
+		}
+
+		long processingTime = System.currentTimeMillis() - startTime;
+
+		Payment payment = Payment.builder().amount(request.getAmount()).currency(request.getCurrency())
+				.paymentMethod(request.getPaymentMethod())
+				.status(paymentSuccess ? PaymentStatus.SUCCESS : PaymentStatus.FAILED)
+				.provider(finalProvider.getProviderName())
+				.providerTransactionId(providerResponse != null ? providerResponse.getTransactionId() : null)
+				.retryCount(retryCount).failoverOccurred(failoverOccurred).attemptHistory(attemptHistory.toString())
+				.finalFailureReason(paymentSuccess ? null : "Payment failed after retries and failover")
+				.processingTimeMs(processingTime).createdAt(LocalDateTime.now()).updatedAt(LocalDateTime.now()).build();
+
+		Payment savedPayment = paymentRepository.save(payment);
+
+		log.info("Payment completed with status {}", savedPayment.getStatus());
+
+		return mapToResponse(savedPayment);
+	}
+
+	private PaymentResponse mapToResponse(Payment payment) {
+
+		return PaymentResponse.builder().paymentId(payment.getId()).amount(payment.getAmount())
+				.currency(payment.getCurrency()).paymentMethod(payment.getPaymentMethod())
+				.paymentStatus(payment.getStatus().name()).finalProvider(payment.getProvider())
+				.providerTransactionId(payment.getProviderTransactionId()).retryCount(payment.getRetryCount())
+				.failoverOccurred(payment.getFailoverOccurred()).processingTimeMs(payment.getProcessingTimeMs())
+				.finalFailureReason(payment.getFinalFailureReason()).attemptHistory(payment.getAttemptHistory())
+				.build();
+	}
 }

@@ -1,13 +1,16 @@
 package com.yuno.payment.service;
 
+import java.util.List;
+import java.util.UUID;
+
 import com.yuno.payment.dto.CreatePaymentRequest;
 import com.yuno.payment.dto.PaymentResponse;
 
-import java.util.UUID;
-
 public interface PaymentService {
 
-    PaymentResponse createPayment(CreatePaymentRequest request);
+	PaymentResponse createPayment(CreatePaymentRequest request);
 
-    PaymentResponse getPayment(UUID paymentId);
+	PaymentResponse getPayment(UUID paymentId);
+	
+	List<PaymentResponse> getAllPayments();
 }
