@@ -8,9 +8,9 @@ import com.yuno.payment.dto.PaymentResponse;
 
 public interface PaymentService {
 
-	PaymentResponse createPayment(CreatePaymentRequest request);
+	PaymentResponse createPayment(String idempotencyKey, CreatePaymentRequest request);
 
 	PaymentResponse getPayment(UUID paymentId);
-	
+
 	List<PaymentResponse> getAllPayments();
 }

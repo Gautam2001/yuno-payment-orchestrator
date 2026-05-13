@@ -43,7 +43,8 @@ public class PaymentOrchestrationService {
 
 		PaymentProviderConnector finalProvider = null;
 
-		log.info("Starting payment orchestration");
+		log.info("Starting payment orchestration | method={} amount={} currency={}", request.getPaymentMethod(),
+				request.getAmount(), request.getCurrency());
 
 		PaymentProviderConnector primaryProvider = routingEngine.getPrimaryProvider(request.getPaymentMethod());
 
@@ -68,7 +69,8 @@ public class PaymentOrchestrationService {
 			attemptHistory.append("FAILED -> ").append(primaryProvider.getProviderName()).append(" on attempt ")
 					.append(retryCount).append(" | Reason: ").append(providerResponse.getMessage()).append(" || ");
 
-			log.warn("Retry {} failed for provider {}", retryCount, primaryProvider.getProviderName());
+			log.warn("Retry failed | provider={} retryCount={} reason={}", primaryProvider.getProviderName(),
+					retryCount, providerResponse.getMessage());
 		}
 
 		// FAILOVER FLOW
@@ -80,7 +82,7 @@ public class PaymentOrchestrationService {
 
 			finalProvider = failoverProvider;
 
-			log.warn("Initiating failover to {}", failoverProvider.getProviderName());
+			log.warn("Failover triggered | switchingTo={}", failoverProvider.getProviderName());
 
 			providerResponse = failoverProvider.processPayment(request);
 
@@ -110,7 +112,8 @@ public class PaymentOrchestrationService {
 
 		Payment savedPayment = paymentRepository.save(payment);
 
-		log.info("Payment completed with status {}", savedPayment.getStatus());
+		log.info("Payment completed | paymentId={} status={} provider={} processingTime={}ms", savedPayment.getId(),
+				savedPayment.getStatus(), savedPayment.getProvider(), savedPayment.getProcessingTimeMs());
 
 		return mapToResponse(savedPayment);
 	}
